@@ -751,11 +751,18 @@ gfx_SetDraw(gfx_screen)
 uint8_t gfx_GetDraw(void);
 
 /**
- * Swaps the buffer with the visible screen and vice versa.
+ * Swaps the screen and drawing buffer pointers.
  *
- * The current drawing location remains the same.
+ * Does not wait for the screen buffer to finish being displayed. Instead, all
+ * graphx drawing functions will wait for this. To wait explicitly, use
+ * gfx_Wait().
  */
 void gfx_SwapDraw(void);
+
+/**
+ * Waits for the screen buffer to finish being displayed after gfx_SwapDraw().
+ */
+void gfx_Wait(void);
 
 /**
  * Copies the input buffer to the opposite buffer

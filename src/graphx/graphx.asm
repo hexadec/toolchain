@@ -3,7 +3,7 @@
 
  .libraryAppVar     "GRAPHX"          ; Name of library on the calc
  .libraryName       "graphx"          ; Name of library
- .libraryVersion    7                 ; Version information (1-255)
+ .libraryVersion    8                 ; Version information (1-255)
 
 ;-------------------------------------------------------------------------------
 ; v1 functions - Can no longer move/delete
@@ -113,12 +113,16 @@
  .function "gfx_ConvertToRLETSprite",_ConvertToRLETSprite
  .function "gfx_ConvertToNewRLETSprite",_ConvertToNewRLETSprite
 ;-------------------------------------------------------------------------------
-; v7 functions
+; v7 functions - Can no longer move/delete
 ;-------------------------------------------------------------------------------
  .function "gfx_RotateScaleSprite",_RotateScaleSprite
  .function "gfx_RotatedScaledTransparentSprite_NoClip",_RotatedScaledTransparentSprite_NoClip
  .function "gfx_RotatedScaledSprite_NoClip",_RotatedScaledSprite_NoClip
- 
+;-------------------------------------------------------------------------------
+; v8 functions
+;-------------------------------------------------------------------------------
+ .function "gfx_Wait",_Wait
+
  .beginDependencies
  .endDependencies
 
@@ -408,9 +412,11 @@ _FillScreen:
 	ld	hl,(currDrawBuffer)	; hl = buffer
 	push	hl
 	pop	de			; de = buffer
-_	ld	(de),a			; *buffer = color
-	inc	de			; de = buffer+1
+_CopyBuffer_ASM:
 	ld	bc,lcdSize-1
+	call	_Wait \.r
+	ld	(de),a			; *buffer = color
+	inc	de			; de = buffer+1
 	ldir				; fill the rest of the buffer
 	ret
 
@@ -424,7 +430,7 @@ _ZeroScreen:
 	ld	hl,$E40000		; E40000-EFFFFF: reads as 0, 1 waitstate
 	ld	de,(currDrawBuffer)
 	xor	a,a
-	jr	-_
+	jr	_CopyBuffer_ASM
 
 ;-------------------------------------------------------------------------------
 _SetPalette:
@@ -483,7 +489,8 @@ _SetPixel:
 	inc	hl                          ; move to next argument
 	ld	de,0
 	ld	e,(hl)                      ; e = y coordinate
-_SetPixel_ASM:
+	call	_Wait \.r
+_SetPixel_NoWait_ASM:
 	call	_PixelPtr_ASM \.r
 	ret	c                           ; return if out of bounds
 Color_SMC_1 =$+1
@@ -557,6 +564,7 @@ _FillRectangle_NoClip_ASM:
 	ld	(_RectangleWidth1_SMC),bc \.r
 	ld	(_RectangleWidth2_SMC),bc \.r
 	ld	hl,Color_SMC_1 \.r
+	call	_Wait \.r
 	ldi                                 ; check if we only need to draw 1 pixel
 	pop	hl
 	jp	po,_Rectangle_NoClip_Skip \.r
@@ -729,7 +737,8 @@ _RectHoriz_ASM:
 	adc	hl,bc
 	ret	z                           ; make sure the width is not 0
 	ld	hl,(iy+3)
-_HorizLine_NoClip_ASM:
+	call	_Wait \.r
+_HorizLine_NoClip_NoWait_ASM:
 	ld	d,lcdWidth/2
 	mlt	de
 	add	hl,de
@@ -816,6 +825,7 @@ _RectVert_ASM:
 	ld	de,lcdWidth
 Color_SMC_3 =$+1
 	ld 	a,0
+	call	_Wait \.r
 _:	ld	(hl),a                      ; loop for height
 	add	hl,de
 	djnz	-_
@@ -847,8 +857,23 @@ _:	sbc	hl,bc
 	jr	---_
 
 ;-------------------------------------------------------------------------------
+_GetDraw:
+; Gets the current drawing state
+; Arguments:
+;  None
+; Returns:
+;  Returns true if drawing on the buffer
+	ld	hl,(currDrawBuffer)
+	ld	de,(mpLcdBase)
+	xor	a,a
+	sbc	hl,de
+	ret	z                           ; drawing to screen
+	inc	a
+	ret                                 ; drawing to buffer
+
+;-------------------------------------------------------------------------------
 _SwapDraw:
-; Safely swap the vram buffer pointers for double buffered output
+; Swaps the screen and drawing buffer pointers
 ; Arguments:
 ;  None
 ; Returns:
@@ -864,25 +889,25 @@ _:	ld	(currDrawBuffer),de         ; set up the new buffer location
 	ld	(mpLcdBase),hl              ; set the new pointer location
 	ld	hl,mpLcdIcr
 	set	2,(hl)                      ; clear the previous intrpt set
-	ld	l,mpLcdRis&$ff
-_:	bit	2,(hl)                      ; wait until the interrupt triggers
-	jr	z,-_
+	ld	a,$F5
+	ld	(_Wait),a \.r   ; enable vsync wait
 	ret
 
 ;-------------------------------------------------------------------------------
-_GetDraw:
-; Gets the current drawing state
+_Wait:
+; Waits for the screen buffer to finish being displayed after _SwapDraw
 ; Arguments:
 ;  None
 ; Returns:
-;  Returns true if drawing on the buffer
-	ld	hl,(currDrawBuffer)
-	ld	de,(mpLcdBase)
-	xor	a,a
-	sbc	hl,de
-	ret	z                           ; drawing to screen
-	inc	a
-	ret                                 ; drawing to buffer
+;  None
+	ret				; will be SMC'd into push af
+_	ld	a,(mpLcdRis)
+	bit	2,a
+	jr	z,-_
+	ld	a,$C9			; ret
+	ld	(_Wait),a \.r
+	pop	af
+	ret
 
 ;-------------------------------------------------------------------------------
 _Circle:
@@ -906,6 +931,7 @@ _Circle:
 	ld	hl,1
 	or	a,a
 	sbc	hl,bc
+	call	_Wait \.r
 	jp	l_4 \.r
 l_5:	ld	bc,(iy+3)
 	ld	hl,(iy-6)
@@ -918,7 +944,7 @@ l_5:	ld	bc,(iy+3)
 	add	hl,de
 	ex	de,hl
 	push	de
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	ld	bc,(iy+6)
 	ld	hl,(iy-6)
 	add	hl,bc
@@ -930,7 +956,7 @@ l_5:	ld	bc,(iy+3)
 	push	hl
 	push	hl
 	pop	bc
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	ld	bc,(iy-6)
 	ld	hl,(iy+6)
 	or	a,a
@@ -938,7 +964,7 @@ l_5:	ld	bc,(iy+3)
 	ex	de,hl
 	pop	bc
 	push	de
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	pop	de
 	ld	bc,(iy-3)
 	ld	hl,(iy+3)
@@ -947,10 +973,10 @@ l_5:	ld	bc,(iy+3)
 	push	hl
 	push	hl
 	pop	bc
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	pop	bc
 	pop	de
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	pop	de
 	ld	bc,(iy-6)
 	ld	hl,(iy+3)
@@ -959,7 +985,7 @@ l_5:	ld	bc,(iy+3)
 	push	hl
 	push	hl
 	pop	bc
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	ld	bc,(iy-3)
 	ld	hl,(iy+6)
 	or	a,a
@@ -967,10 +993,10 @@ l_5:	ld	bc,(iy+3)
 	ex	de,hl
 	pop	bc
 	push	de
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	pop	de
 	pop	bc
-	call	_SetPixel_ASM \.r
+	call	_SetPixel_NoWait_ASM \.r
 	ld	bc,(iy-3)
 	inc	bc
 	ld	(iy-3),bc
@@ -1033,6 +1059,7 @@ _FillCircle:
 	ld	hl,1
 	or	a,a
 	sbc	hl,bc
+	call	_Wait \.r
 	jp	b_4 \.r
 _FillCircleSectors:
 	ld	hl,(ix-3)
@@ -1174,7 +1201,7 @@ _FillCircle_NoClipSectors:
 	sbc	hl,bc
 	ld	(FCircleNC1_SMC),hl \.r
 	pop	bc
-	call	_HorizLine_NoClip_ASM \.r
+	call	_HorizLine_NoClip_NoWait_ASM \.r
 FCircleNC0_SMC: =$+1
 	ld	bc,0
 	ld	de,(ix-6)
@@ -1184,7 +1211,7 @@ FCircleNC0_SMC: =$+1
 	ld	e,l
 FCircleNC1_SMC: =$+1
 	ld	hl,0
-	call	_HorizLine_NoClip_ASM \.r
+	call	_HorizLine_NoClip_NoWait_ASM \.r
 	ld	hl,(ix-6)
 	add	hl,hl
 	inc	hl
@@ -1200,7 +1227,7 @@ FCircleNC1_SMC: =$+1
 	sbc	hl,bc
 	ld	(FCircleNC4_SMC),hl \.r
 	pop	bc
-	call	_HorizLine_NoClip_ASM \.r
+	call	_HorizLine_NoClip_NoWait_ASM \.r
 FCircleNC3_SMC: =$+1
 	ld	bc,0
 	ld	de,(ix-3)
@@ -1210,7 +1237,7 @@ FCircleNC3_SMC: =$+1
 	ld	e,l
 FCircleNC4_SMC: =$+1
 	ld	hl,0
-	call	_HorizLine_NoClip_ASM \.r
+	call	_HorizLine_NoClip_NoWait_ASM \.r
 	ld	bc,(ix-3)
 	inc	bc
 	ld	(ix-3),bc
@@ -1463,6 +1490,7 @@ dl_horizontal:
 	inc	bc
 Color_SMC_4 =$+1
 	ld	a,$00
+	call	_Wait \.r
 dl_hloop:
 	ld	(hl),a				; write pixel
 	cpi
@@ -1488,6 +1516,7 @@ dl_vertical:
 	srl	a				; a = dy / 2
 	inc	c
 	pop	hl
+	call	_Wait \.r
 dl_vloop:
 Color_SMC_5 =$+1
 	ld	(hl),$00			; write pixel
@@ -1701,6 +1730,7 @@ _Shift_ASM:
 	add	hl,de
 	add	hl,de
 	add	hl,bc
+	call	_Wait \.r
 ShiftCpyAmt_SMC =$+1
 _:	ld	bc,0
 	ex	de,hl
@@ -1794,6 +1824,7 @@ NcSprBigLoop:
 	push	de
 NcSprWidth:
 	ld	a,0                         ; width of sprite
+	call	_Wait \.r
 	jr	NcSprLpEntry
 NcSprWlp:
 	ldir
@@ -1880,6 +1911,7 @@ _ScaledTransparentSprite_NoClip:
 	lea	hl,iy+2                     ; hl -> sprite data
 	push	ix                          ; save ix sp
 	ld	ixh,a                       ; ixh = height
+	call	_Wait \.r
 NcSprTHeightScale =$+2
 _:	ld	ixl,0                       ; ixl = height scale
 _:	push	hl
@@ -1961,6 +1993,9 @@ ClipSprTransNextAmt =$+1
 	pop	ix
 	ret
 
+_TransparentPlot_ASM:
+	call	_Wait \.r
+	jr	_TransparentPlot_ASM_Start
 _TransparentPlot_ASM_Opaque:                ; routine to handle transparent plotting
 	ldi
 	ret	po
@@ -1983,7 +2018,7 @@ _TransparentPlot_ASM_Transparent:
 	inc	hl
 	dec	c
 	ret	z
-_TransparentPlot_ASM:
+_TransparentPlot_ASM_Start:
 	cp	a,(hl)
 	jr	nz,_TransparentPlot_ASM_Opaque
 	inc	de
@@ -2035,6 +2070,7 @@ _Sprite:
 	ld	hl,(iy+6)                   ; hl -> sprite data
 	pop	iy
 	ld	bc,0
+	call	_Wait \.r
 ClipSprLineNext =$+1
 _:	ld	c,0
 	lea	de,iy
@@ -2082,6 +2118,7 @@ _Sprite_NoClip:
 	ld	iyl,a				; (lcdWidth/2)-(spriteWidth/2)
 	ld	a,(hl)				; spriteHeight
 	inc	hl
+	call	_Wait \.r
 	jr	SprNcLpStart
 SprNcLpOddW:
 	dec	de				; needed if sprite width is odd
@@ -2712,7 +2749,7 @@ _PrintStringXY_Clip_ASM:
 	ld	hl,(hl)
 	ld	(TextYPos_SMC),hl \.r       ; set new y pos
 	pop	hl
-	jr	NextCharLoop                ; jump to the main string handler
+	jr	_PrintString_ASM            ; jump to the main string handler
 
 ;-------------------------------------------------------------------------------
 _PrintStringXY:
@@ -2738,7 +2775,7 @@ _PrintStringXY_ASM:
 	dec	hl
 	dec	hl
 	ld	hl,(hl)
-	jr	NextCharLoop
+	jr	_PrintString_ASM
 
 ;-------------------------------------------------------------------------------
 _PrintString:
@@ -2751,6 +2788,7 @@ _PrintString:
 	pop	hl
 	push	hl
 	push	de
+_PrintString_ASM:
 NextCharLoop:
 	ld	a,(hl)                      ; get the current character
 	or	a,a
@@ -2903,6 +2941,7 @@ TextYPos_SMC = $+1
 	ld	iy,0
 FONT_HEIGHT_SMC_3 =$+2
 	ld	ixl,8
+	call	_Wait \.r
 	jr	_PrintLargeFont_ASM         ; SMC the jump
 LargeFontJump_SMC =$-1
 CharLoop:
@@ -4120,7 +4159,7 @@ _RotatedScaledSprite_NoClip:
 ;  arg1 : Pointer to sprite struct output
 	xor	a,a
 	jr	_RotatedScaled_ASM
-	
+
 ;-------------------------------------------------------------------------------
 _RotatedScaledTransparentSprite_NoClip:
 ; Rotate and scale an image drawn directly to the screen buffer
@@ -4132,7 +4171,7 @@ _RotatedScaledTransparentSprite_NoClip:
 ; Returns:
 ;  arg1 : Pointer to sprite struct output
 	ld	a,3
-	
+
 _RotatedScaled_ASM:
 	ld	(_smc_tp),a \.r
 	push	ix
@@ -4142,7 +4181,7 @@ _RotatedScaled_ASM:
 	ld	iy,(ix+6)				; sprite pointer
 	lea	hl,iy+2
 	ld	(_dsrs_sprptr_0 + 1),hl \.r		; write smc
-	
+
 	ld	l,(ix+12)				; y
 	ld	h,160
 	mlt	hl
@@ -4153,7 +4192,7 @@ _RotatedScaled_ASM:
 	ld	hl,(currDrawBuffer)
 	add	hl,de					; offset buffer
 	push	hl
-	
+
 	; sinf = sinTable[angle] * 128 / scale;
 	ld	a,(ix+15)				; angle
 	call	getSinCos \.r
@@ -4195,7 +4234,7 @@ _RotatedScaled_ASM:
 	call	_16Mul16SignedNeg \.r			; sinf * -(size * scale / 128)
 	ld	(_dsrs_dys_0 + 1),hl \.r		; write smc
 	push	hl
-	
+
 	; cosf = sinTable[angle + 64] * 128 / scale
 	ld	a,64
 	add	a,(ix+15)				; angle + 64
@@ -4221,7 +4260,7 @@ _RotatedScaled_ASM:
 	call	_16Mul16SignedNeg \.r			; cosf * -(size * scale / 128)
 	ld	(_dsrs_dyc_0 + 1),hl \.r		; write smc
  	push	hl
-	
+
 	ld	a,(iy)					; size
 	ld	(_dsrs_ssize_1 + 1),a \.r		; write smc
 	dec	a
@@ -4252,13 +4291,14 @@ _:	ld	(_dsrs_size_1 + 2),a \.r		; write smc
 	ex	de,hl
 	sbc	hl,de
 	ld	(_line_add + 1),hl \.r
-	
+
 	pop	de					; smc = dxc start
 	pop	hl					; smc = dxs start
 	pop	ix
-	
+
 	push	af
 	ld	iyh,a					; size * scale / 64
+	call	_Wait \.r
 drawSpriteRotatedScaled_Loop1:
 	push	hl					; dxs
 	push	de					; dxc
@@ -4284,7 +4324,7 @@ _dsrs_size_1:						; smc = size * scale / 64
 	ld	iyl,$00
 drawSpriteRotatedScaled_Loop2:
 	push	hl					; xs
- 
+
 	ld	a,d
 	or	a,h
 	rlca
@@ -4339,7 +4379,7 @@ _dsrs_sinf_1:						; smc = sinf
 _line_add:
 	ld	bc,$000000
 	add	ix,bc					; y++
-	
+
 	dec	iyh
 	jp	nz,drawSpriteRotatedScaled_Loop1 \.r	; y loop
 	pop	af					; sprite out ptr
@@ -4364,7 +4404,7 @@ _RotateScaleSprite:
 	ld	iy,(ix+6)				; sprite pointer
 	lea	hl,iy+2
 	ld	(_smc_dsrs_sprptr_0 + 1),hl \.r		; write smc
-	
+
 _ScaleRotateSprite_ASM:
 	; sinf = sinTable[angle] * 128 / scale;
 	ld	a,(ix+12)				; angle
@@ -4407,7 +4447,7 @@ _ScaleRotateSprite_ASM:
 	call	_16Mul16SignedNeg \.r			; sinf * -(size * scale / 128)
 	ld	(_smc_dsrs_dys_0 + 1),hl \.r		; write smc
 	push	hl
-	
+
 	; cosf = sinTable[angle + 64] * 128 / scale
 	ld	a,64
 	add	a,(ix+12)				; angle + 64
@@ -4433,7 +4473,7 @@ _ScaleRotateSprite_ASM:
 	call	_16Mul16SignedNeg \.r			; cosf * -(size * scale / 128)
 	ld	(_smc_dsrs_dyc_0 + 1),hl \.r		; write smc
  	push	hl
-	
+
 	ld	a,(iy)					; size
 	ld	(_smc_dsrs_ssize_1 + 1),a \.r		; write smc
 	dec	a
@@ -4459,13 +4499,13 @@ _:	ld	(_smc_dsrs_size_1 + 2),a \.r		; write smc
 
 	pop	de					; smc = dxc start
 	pop	hl					; smc = dxs start
-	
+
 	ld	iy,(ix+9)				; sprite storing to
 	push	iy
 	ld	(iy+0),a
 	ld	(iy+1),a
 	lea	ix,iy+2
-	
+
 	ld	iyh,a					; size * scale / 64
 drawSpriteRotateScale_Loop1:
 	push	hl					; dxs
@@ -4492,7 +4532,7 @@ _smc_dsrs_size_1:					; smc = size * scale / 64
 	ld	iyl,$00
 drawSpriteRotateScale_Loop2:
 	push	hl					; xs
- 
+
 	ld	a,d
 	or	a,h
 	rlca
@@ -4703,6 +4743,7 @@ ff_xmin_smc =$+1
 ff_oldcolor0_smc =$+1
 	ld	a,0
 
+	call	_Wait \.r
 	jr	+_
 ff_forloop0:                                ; for (x=x1; !(x & 0x8000) && x>=xmin && p(x, y) == ov; x--) { s(x, y); }
 ff_newcolor0_smc =$+1
@@ -5040,6 +5081,7 @@ _RLETSprite_ClipTop_End:		; a = 0, hl = start of (clipped) sprite data
 	add	a,lcdWidth-255		; a = (lcdWidth-(width on-screen))&0FFh
 	rra				; a = (lcdWidth-(width on-screen))/2
 	dec	b
+	call	_Wait \.r
 	jr	z,_RLETSprite_ClipLeftMiddle
 	ld	(_RLETSprite_ClipRight_HalfRowDelta_SMC),a \.r
 	sbc	a,a
@@ -5208,6 +5250,7 @@ _RLETSprite_NoClip_Begin:
 	sbc	a,a
 	sub	a,s8(_RLETSprite_NoClip_LoopJr_SMC+1-_RLETSprite_NoClip_Row_WidthEven)
 	ld	(_RLETSprite_NoClip_LoopJr_SMC),a \.r
+	call	_Wait \.r
 ; Row loop (if sprite width is odd)
 _RLETSprite_NoClip_Row_WidthOdd:
 	inc	de			; increment buffer pointer
